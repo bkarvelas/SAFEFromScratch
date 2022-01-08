@@ -36,6 +36,7 @@ Note that one difference with the SAFE template is that in this project we'll us
   - 22.2 Server Configuration
   - 22.3 Webpack Refactoring 2
   - 22.4 Webpack Refactoring 3
+  - 22.5 Build Soft Dependencies
 - [23. Final Thoughts](#final-thoughts)
 
 <h1 id="solution">Create the solution and projects</h1>
@@ -1650,6 +1651,69 @@ Note that I'm referring to the left and right side of the expression as values, 
 
 For example `isProduction && new CopyWebpackPlugin({patterns: [{from: resolve(config.assetsDir)}]}),` if `isProduction` is false it will return `false`, but if it's true it will return the `CopyWebpackPlugin`.
 Finally in the last line we filter the false items in the array with `.filter(Boolean)` leaving only the plugins.
+
+### Build Soft Dependencies
+
+I updated the build tasks to use the `==>` for dependencies that I want to run always and `?=>` for [soft dependencies](https://fake.build/legacy-core-targets.html#Soft-dependencies).
+for example:
+```f#
+let dependencies = [
+    "TaskB"
+        ==> "TaskA"
+
+    "TaskB"
+        ==> "TaskA"
+        ==> "TaskC"
+]
+```
+In this case `TaskA` depends on `TaskB` so `TaskB` will always run before `TaskA` thus we can simplify the dependencies:
+```f#
+let dependencies = [
+    "TaskB"
+        ==> "TaskA"
+
+    "TaskA" // TaskA already depends on TaskB so it will run before TaskA
+        ==> "TaskC" 
+]
+```
+Now there are cases were we want a `soft dependency`, that means a dependency used only in certain cases, for example:
+```f#
+let dependencies = [
+    "TaskB"
+        ?=> "TaskA" // this is a soft dependency defined with ?=>
+
+    // task C depends on Task A but TaskA doesn't depend on TaskB so we need to specify it again.
+    // note that we use the ?=> again so we don't accidentally make TaskA depend on TaskB always.
+    "TaskB" 
+        ?=> "TaskA" 
+        ==> "TaskC"
+]
+```
+The build dependencies on `./build.fs` ended up looking like this:
+```f#
+let dependencies = [
+    // ==> is a dependency and will build a graph of dependencies.
+    // ?=> is a soft dependency which means we make sure it will run only in specific cases.
+
+    "InstallClient"
+        ==> "Run"
+
+    "Clean"
+        ?=> "InstallClient"
+        ==> "Bundle"
+
+    "CleanAll"
+        ?=> "InstallClient"
+        ==> "CleanAndRun"
+
+    "InstallClient"
+        ==> "RunTests"
+
+    "Bundle"
+        ==> "Azure"
+]
+```
+I also created `CleanAndRun` as I found that I don't need to clean the project very often and I use just `Run` most of the times. 
 
 <h1 id="final-thoughts">Final thoughts</h1>
 
