@@ -40,6 +40,8 @@ Disclaimer: The main focus of this tutorial is to be easy to follow and to have 
   - 22.1 Warning as Error 
   - 22.2 Server Configuration
   - 22.3 Webpack Refactoring 2
+  - 22.4 Webpack Refactoring 3
+  - 22.5 Build Soft Dependencies
 - [23. Final Thoughts](#final-thoughts)
 
 <h1 id="solution">Create the solution and projects</h1>
@@ -736,7 +738,7 @@ Now you need to update the .fsproj file to be an executable and we can remove xu
 
 </Project>
 ```
-Not it's turn to update our unit tests and use Expecto instead of XUnit
+Now it's time to update our unit tests and use Expecto instead of XUnit
 ```f#
 module Server.Tests
 
@@ -789,6 +791,7 @@ However we added a bunch of small changes and we need to clean the project a lit
 
 ## Webpack
 Let's start by cleaning our webpack configuration, for this we are just going to take the hardcoded paths and take them to a CONFIG object.
+So at the beginning of our ```./webpack.config.js``` file, we add the lines below.
 ```js
 const CONFIG = {
     fsharpEntry: "./src/Client/Program.fs.js",
@@ -1612,6 +1615,144 @@ module.exports = common.getConfig(CONFIG);
 ```
 - Note that I had to update assetsDir to `assetsDir: "./src/Client/public"`, previously we were not worried about copying our assets but since we want the test configuration to be as close as possible to the real implementation we are going to do it now.
 - Use the getConfig function in `webpack.config.js` and you should be ready to try it our with `dotnet run RunTests` and `dotnet run`.
+
+### Webpack Refactoring 3
+I created a PR to include the previous changes in the official Safe-Template repository and some feedback came which I'm adding in this bonus.
+The thing is we can simplify the webpack.config file even more and the steps are quite similar to the previous bonus, remember we created a `getConfig` method? well we are going to move it back to webpack.config.js
+I know sorry for making you work double, but there are some tricks that we are going to use to make it work with just the webpack.config.js file and get rid of the webpack.test.config.js file and the webpack.common.js file. (if you have more complex workflows you can always add them back)
+
+1. Move both CONFIG configurations to the webpack.config.js file:
+```js
+const CONFIG = {
+    /* config content remains the same */
+};
+
+const TEST_CONFIG = {
+    /* test config content remains the same */
+};
+```
+2. We are going to export a [webpack function](https://webpack.js.org/configuration/configuration-types/#exporting-a-function) instead of an object and we are going to choose which config we need to use inside:
+```js
+module.exports = function(env, arg) {
+    // Mode is passed as a flag to npm run, we pass this flag in the package.json scripts. Ex. --mode development
+    // see the docs for more details on flags https://webpack.js.org/api/cli/#flags
+    const mode = arg.mode ?? 'development';
+    // Environment variables can also be defined as args for package.json scripts. Ex. --env test
+    // docs: https://webpack.js.org/api/cli/#environment-options
+    const config = env.test ? TEST_CONFIG : CONFIG;
+    const isProduction = mode === 'production';
+
+    console.log(`Bundling for ${env.test ? 'test' : 'run'} - ${mode} ...`);
+
+    return {
+        mode: mode,
+        /* The rest remains unchanged except that you need to replace CONFIG with config which will be CONIF or TEST_CONFIG depending on the environment */
+    };
+}
+```
+3. First let's focus on the mode `const mode = arg.mode ?? 'development';` now we are retrieving it from the arg passed to the function.
+4. The config is chosen from the env variable passed to the function `const config = env.test ? TEST_CONFIG : CONFIG;`.
+5. For this changes to work we also need to update our package.json scripts and pass this arguments accordingly:
+```js
+{
+    "scripts": {
+        "build": "webpack --mode development",
+        "build:prod": "webpack --mode production",
+        "build:tests": "webpack --mode development --env test",
+        "start": "webpack-dev-server --mode development",
+        "start:tests": "webpack-dev-server --mode development --env test"
+    }
+}
+```
+That's it! We have an even simpler webpack.config.js
+If you are reviewing my commit you will notice an additional change to the plugins section of the config:
+```js
+{
+    plugins: [
+        // ONLY PRODUCTION
+        // isProduction && SomePlugin returns false when it's not production and all false elements are filtered with .filter(Boolean)
+        // MiniCssExtractPlugin: Extracts CSS from bundle to a different file
+        // To minify CSS, see https://github.com/webpack-contrib/mini-css-extract-plugin#minimizing-for-production
+        isProduction && new MiniCssExtractPlugin({filename: 'style.[name].[contenthash].css'}),
+        // CopyWebpackPlugin: Copies static assets to output directory
+        isProduction && new CopyWebpackPlugin({patterns: [{from: resolve(config.assetsDir)}]}),
+
+        // PRODUCTION AND DEVELOPMENT
+        // HtmlWebpackPlugin allows us to use a template for the index.html page
+        // and automatically injects <script> or <link> tags for generated bundles.
+        new HtmlWebpackPlugin({filename: 'index.html', template: resolve(config.indexHtmlTemplate)})
+    ].filter(Boolean),
+}
+```
+This trick came in the code review from the PR I opened. Basically we take advantage of JS syntax. 
+When you have a boolean expression with `&&` if the left side is a truthy value it will be returned otherwise the left value will be returned.
+Note that I'm referring to the left and right side of the expression as values, that's right JS won't return true or false but the values on each side of the expression.
+
+For example `isProduction && new CopyWebpackPlugin({patterns: [{from: resolve(config.assetsDir)}]}),` if `isProduction` is false it will return `false`, but if it's true it will return the `CopyWebpackPlugin`.
+Finally in the last line we filter the false items in the array with `.filter(Boolean)` leaving only the plugins.
+
+### Build Soft Dependencies
+
+I updated the build tasks to use the `==>` for dependencies that I want to run always and `?=>` for [soft dependencies](https://fake.build/legacy-core-targets.html#Soft-dependencies).
+for example:
+```f#
+let dependencies = [
+    "TaskB"
+        ==> "TaskA"
+
+    "TaskB"
+        ==> "TaskA"
+        ==> "TaskC"
+]
+```
+In this case `TaskA` depends on `TaskB` so `TaskB` will always run before `TaskA` thus we can simplify the dependencies:
+```f#
+let dependencies = [
+    "TaskB"
+        ==> "TaskA"
+
+    "TaskA" // TaskA already depends on TaskB so it will run before TaskA
+        ==> "TaskC" 
+]
+```
+Now there are cases were we want a `soft dependency`, that means a dependency used only in certain cases, for example:
+```f#
+let dependencies = [
+    "TaskB"
+        ?=> "TaskA" // this is a soft dependency defined with ?=>
+
+    // task C depends on Task A but TaskA doesn't depend on TaskB so we need to specify it again.
+    // note that we use the ?=> again so we don't accidentally make TaskA depend on TaskB always.
+    "TaskB" 
+        ?=> "TaskA" 
+        ==> "TaskC"
+]
+```
+The build dependencies on `./build.fs` ended up looking like this:
+```f#
+let dependencies = [
+    // ==> is a dependency and will build a graph of dependencies.
+    // ?=> is a soft dependency which means we make sure it will run only in specific cases.
+
+    "InstallClient"
+        ==> "Run"
+
+    "Clean"
+        ?=> "InstallClient"
+        ==> "Bundle"
+
+    "CleanAll"
+        ?=> "InstallClient"
+        ==> "CleanAndRun"
+
+    "InstallClient"
+        ==> "RunTests"
+
+    "Bundle"
+        ==> "Azure"
+]
+```
+I also created `CleanAndRun` as I found that I don't need to clean the project very often and I use just `Run` most of the times. 
 
 <h1 id="final-thoughts">Final thoughts</h1>
 

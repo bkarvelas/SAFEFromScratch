@@ -48,9 +48,16 @@ Target.create "CleanAll" (fun _ ->
     Shell.cleanDir deployPath
 )
 
-Target.create "InstallClient" (fun _ -> run npm "install" ".")
+Target.create "InstallClient" (fun _ -> run npm "install --from-lock-file" ".")
 
 Target.create "Run" (fun _ ->
+    run dotnet "build" sharedPath
+    [ "server", dotnet "watch run" serverPath
+      "client", dotnet "fable watch -o output -s --run npm run start --prefix ../.." clientPath ]
+    |> runParallel
+)
+
+Target.create "CleanAndRun" (fun _ ->
     run dotnet "build" sharedPath
     [ "server", dotnet "watch run" serverPath
       "client", dotnet "fable watch -o output -s --run npm run start --prefix ../.." clientPath ]
@@ -94,20 +101,24 @@ Target.create "Azure" (fun _ ->
 // Define dependencies
 open Fake.Core.TargetOperators
 let dependencies = [
-    "Clean"
-        ==> "Bundle"
+    // ==> is a dependency and will build a graph of dependencies.
+    // ?=> is a soft dependency which means we make sure it will run only in specific cases.
 
-    "Clean"
-        ==> "InstallClient"
+    "InstallClient"
         ==> "Run"
 
+    "Clean"
+        ?=> "InstallClient"
+        ==> "Bundle"
+
     "CleanAll"
-        ==> "InstallClient"
+        ?=> "InstallClient"
+        ==> "CleanAndRun"
+
+    "InstallClient"
         ==> "RunTests"
 
-    "Clean"
-        ==> "InstallClient"
-        ==> "Bundle"
+    "Bundle"
         ==> "Azure"
 ]
 
